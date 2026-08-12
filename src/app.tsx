@@ -1,6 +1,6 @@
 import { setupInjection } from './components/inject';
 import { getContents } from './services/playlist';
-import { harvestColumnBpm } from './services/bpm-column';
+import { harvestColumnData, inspectRowItem } from './services/track-columns';
 import { getCurrentPlaylistUri } from './services/current-uri';
 
 import './assets/css/styles.scss';
@@ -12,11 +12,12 @@ async function main() {
 
    setupInjection();
 
-   // Debug helpers for the BPM-correctness verification step (see README).
+   // Debug helpers for the BPM/key-correctness verification step (see TECHNICAL.md).
    (window as typeof window & { sortBpm?: Record<string, unknown> }).sortBpm = {
       getCurrentPlaylistUri,
       getContents,
-      harvestColumnBpm,
+      harvestColumnData,
+      inspectRowItem,
    };
 }
 

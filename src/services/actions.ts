@@ -1,5 +1,4 @@
 import { setButtonBusy } from '../components/bpm-button';
-import { harvestColumnBpm } from './bpm-column';
 import { getCurrentPlaylistUri } from './current-uri';
 import {
    canModify,
@@ -7,94 +6,159 @@ import {
    getContents,
    getPlaylistName,
    reorderInPlace,
-   sortByBpm,
+   sortTracks,
    type SortDirection,
+   type SortMode,
+   type SortResult,
 } from './playlist';
+import { harvestColumnData } from './track-columns';
 
 const DIRECTION: SortDirection = 'asc';
 
-function notify(message: string, isError = false): void {
-   Spicetify.showNotification(message, isError);
+/** Everything that differs between the sort modes, so the workflow below stays single-copy. */
+interface SortModeSpec {
+   mode: SortMode;
+   /** Notification prefix, e.g. `Sort BPM: …`. */
+   prefix: string;
+   /** What the harvest is reading, for the "reading … for N tracks" notice. */
+   reading: string;
+   /** How the resulting order is described in the success summary. */
+   order: string;
+   /** What the tracks moved to the end were missing, e.g. `without BPM`. */
+   missing: string;
+   /** Bracketed suffix for a new playlist's name: `My list (BPM)`. */
+   nameSuffix: string;
+   /** Shown when not one track had usable data. */
+   noData: string;
 }
 
-/** Shared front half: resolve playlist, load tracks, fetch BPM, sort. */
-async function prepare(uri: string) {
+const SPECS: Record<SortMode, SortModeSpec> = {
+   bpm: {
+      mode: 'bpm',
+      prefix: 'Sort BPM',
+      reading: 'BPM',
+      order: 'by BPM',
+      missing: 'without BPM',
+      nameSuffix: 'BPM',
+      noData: 'no BPM found — is the BPM column visible on this playlist?',
+   },
+   key: {
+      mode: 'key',
+      prefix: 'Sort key',
+      reading: 'key and BPM',
+      order: 'by key + BPM',
+      missing: 'without a key',
+      nameSuffix: 'Key',
+      noData: 'no musical key found — is the Key column visible on this playlist?',
+   },
+};
+
+function notify(spec: SortModeSpec, message: string, isError = false): void {
+   Spicetify.showNotification(`${spec.prefix}: ${message}`, isError);
+}
+
+/** Log the resulting order for the devtools correctness check (see TECHNICAL.md). */
+function logOrder(spec: SortModeSpec, result: SortResult): void {
+   const sorted = result.ordered.slice(0, result.sortedCount);
+   console.table(sorted.map((item) => (spec.mode === 'key'
+      ? { name: item.name ?? item.uri, key: item.camelotKey, bpm: item.bpm }
+      : { name: item.name ?? item.uri, bpm: item.bpm })));
+}
+
+/** Shared front half: load tracks, harvest BPM + key in one scroll pass, sort. */
+async function prepare(uri: string, spec: SortModeSpec): Promise<SortResult | null> {
    const items = await getContents(uri);
    if (items.length === 0) {
-      notify('Sort BPM: this playlist is empty', true);
+      notify(spec, 'this playlist is empty', true);
       return null;
    }
 
-   notify(`Sort BPM: reading BPM for ${items.length} tracks…`);
+   notify(spec, `reading ${spec.reading} for ${items.length} tracks…`);
    setButtonBusy('0%');
-   const bpmMap = await harvestColumnBpm(items.length, (found, total) => {
+   const data = await harvestColumnData(items.length, (found, total) => {
       setButtonBusy(`${Math.min(99, Math.round((found / total) * 100))}%`);
    });
-   const result = sortByBpm(items, bpmMap, DIRECTION);
 
+   const result = sortTracks(items, data, spec.mode, DIRECTION);
    if (result.sortedCount === 0) {
-      notify('Sort BPM: no BPM found — is the BPM column visible on this playlist?', true);
+      notify(spec, spec.noData, true);
       return null;
    }
 
-   // Support the devtools correctness check (see README verification step).
-   console.table(
-      result.ordered
-         .filter((item) => typeof item.bpm === 'number')
-         .map((item) => ({ name: item.name ?? item.uri, bpm: item.bpm })),
-   );
-
-   return { items, result };
+   logOrder(spec, result);
+   return result;
 }
 
-function summary(sortedCount: number, skipped: number): string {
-   const base = `Sorted ${sortedCount} tracks by BPM`;
-   return skipped > 0 ? `${base} · ${skipped} without BPM moved to end` : base;
+function summary(spec: SortModeSpec, result: SortResult): string {
+   const base = `Sorted ${result.sortedCount} tracks ${spec.order}`;
+   return result.skipped.length > 0
+      ? `${base} · ${result.skipped.length} ${spec.missing} moved to end`
+      : base;
 }
 
-/** Sort by BPM by reordering the current playlist in place. */
-export async function sortReorder(): Promise<void> {
+/** Reorder the current playlist in place. */
+async function runReorder(spec: SortModeSpec): Promise<void> {
    const uri = getCurrentPlaylistUri();
-   if (!uri) return notify('Sort BPM: open a playlist first', true);
+   if (!uri) return notify(spec, 'open a playlist first', true);
 
    if (!(await canModify(uri))) {
-      return notify('Sort BPM: you can only reorder playlists you own', true);
+      return notify(spec, 'you can only reorder playlists you own', true);
    }
 
    try {
-      const prepared = await prepare(uri);
-      if (!prepared) return;
+      const result = await prepare(uri, spec);
+      if (!result) return;
 
-      await reorderInPlace(uri, prepared.result.ordered, (done, total) => {
+      await reorderInPlace(uri, result.ordered, (done, total) => {
          setButtonBusy(`${Math.round((done / total) * 100)}%`);
       });
-      notify(`Sort BPM: ${summary(prepared.result.sortedCount, prepared.result.skipped.length)}`);
+      notify(spec, summary(spec, result));
    } catch (err) {
-      console.error('Sort BPM reorder failed:', err);
-      notify('Sort BPM: failed to reorder playlist (see console)', true);
+      console.error(`${spec.prefix} reorder failed:`, err);
+      notify(spec, 'failed to reorder playlist (see console)', true);
    } finally {
       setButtonBusy(null);
    }
 }
 
-/** Sort by BPM into a brand new playlist, leaving the original untouched. */
-export async function sortToNewPlaylist(): Promise<void> {
+/** Sort into a brand new playlist, leaving the original untouched. */
+async function runToNewPlaylist(spec: SortModeSpec): Promise<void> {
    const uri = getCurrentPlaylistUri();
-   if (!uri) return notify('Sort BPM: open a playlist first', true);
+   if (!uri) return notify(spec, 'open a playlist first', true);
 
    try {
-      const prepared = await prepare(uri);
-      if (!prepared) return;
+      const result = await prepare(uri, spec);
+      if (!result) return;
 
-      const name = `${await getPlaylistName(uri)} (BPM)`;
-      const newUri = await createSortedPlaylist(uri, prepared.result.ordered, name);
+      const name = `${await getPlaylistName(uri)} (${spec.nameSuffix})`;
+      const newUri = await createSortedPlaylist(uri, result.ordered, name);
 
-      notify(`Sort BPM: created "${name}" · ${summary(prepared.result.sortedCount, prepared.result.skipped.length)}`);
+      notify(spec, `created "${name}" · ${summary(spec, result)}`);
       Spicetify.Platform.History.push(`/playlist/${newUri.split(':').pop()}`);
    } catch (err) {
-      console.error('Sort BPM new-playlist failed:', err);
-      notify('Sort BPM: failed to create sorted playlist (see console)', true);
+      console.error(`${spec.prefix} new-playlist failed:`, err);
+      notify(spec, 'failed to create sorted playlist (see console)', true);
    } finally {
       setButtonBusy(null);
    }
+}
+
+/** Reorder the current playlist in place by BPM. */
+export function sortReorderByBpm(): Promise<void> {
+   return runReorder(SPECS.bpm);
+}
+
+/** Reorder the current playlist in place by Camelot key, then BPM within each key. */
+export function sortReorderByKey(): Promise<void> {
+   return runReorder(SPECS.key);
+}
+
+/** Copy the current playlist into a new one sorted by BPM. */
+export function sortToNewPlaylistByBpm(): Promise<void> {
+   return runToNewPlaylist(SPECS.bpm);
+}
+
+/** Copy the current playlist into a new one sorted by Camelot key, then BPM. */
+export function sortToNewPlaylistByKey(): Promise<void> {
+   return runToNewPlaylist(SPECS.key);
 }

@@ -1,21 +1,31 @@
 import { chunk } from '../utils/chunk';
+import { camelotRank, type CamelotCode } from './camelot';
+import type { RowData } from './track-columns';
 
 export interface PlaylistItem {
    uri: string;
    uid: string;
    name?: string;
    bpm?: number | null;
+   camelotKey?: CamelotCode | null;
    [key: string]: unknown;
 }
 
 export type SortDirection = 'asc' | 'desc';
 
-interface SortResult {
-   /** Full playlist order: tracks with tempo (sorted) followed by tracks without. */
+/**
+ * What to sort on.
+ * - `bpm` — tempo alone.
+ * - `key` — Camelot key first (1A, 1B, 2A … 12B), then tempo within each key.
+ */
+export type SortMode = 'bpm' | 'key';
+
+export interface SortResult {
+   /** Full playlist order: sortable tracks first, then the ones we had no data for. */
    ordered: PlaylistItem[];
-   /** How many tracks had a usable BPM. */
+   /** How many tracks had the data this sort mode needs. */
    sortedCount: number;
-   /** Tracks with no BPM (local files, podcasts, unavailable) — kept at the end. */
+   /** Tracks with no usable data (local files, podcasts, unavailable) — kept at the end. */
    skipped: PlaylistItem[];
 }
 
@@ -49,27 +59,55 @@ export async function canModify(uri: string): Promise<boolean> {
 }
 
 /**
- * Return the playlist in BPM order using a `uri -> bpm` map (Spotify's displayed
- * column BPM). Tracks without a BPM are appended at the end — never silently
- * interleaved into a wrong position.
+ * Return the playlist ordered for `mode`, using the harvested `uri -> data` map of
+ * Spotify's own displayed column values.
+ *
+ * Tracks missing the data the mode needs are appended at the end — never silently
+ * interleaved into a wrong position. Ties keep the playlist's existing relative order,
+ * since Array#sort is stable.
+ *
+ * `direction` applies to the BPM axis only; the Camelot wheel is always walked upwards,
+ * because descending it isn't a meaningful DJ operation the way descending tempo is.
  */
-export function sortByBpm(items: PlaylistItem[], bpmMap: Map<string, number>, direction: SortDirection): SortResult {
-   const withBpm: { item: PlaylistItem; bpm: number }[] = [];
+export function sortTracks(
+   items: PlaylistItem[],
+   data: Map<string, RowData>,
+   mode: SortMode,
+   direction: SortDirection,
+): SortResult {
+   const sortable: { item: PlaylistItem; rank: number; bpm: number }[] = [];
    const skipped: PlaylistItem[] = [];
 
    for (const item of items) {
-      const bpm = bpmMap.get(item.uri);
-      if (typeof bpm === 'number' && Number.isFinite(bpm)) {
-         withBpm.push({ item: { ...item, bpm }, bpm });
-      } else {
-         skipped.push({ ...item, bpm: null });
+      const found = data.get(item.uri);
+      const bpm = found?.bpm ?? null;
+      const camelotKey = found?.camelotKey ?? null;
+      const enriched: PlaylistItem = { ...item, bpm, camelotKey };
+
+      if (mode === 'key' ? camelotKey === null : bpm === null) {
+         skipped.push(enriched);
+         continue;
       }
+
+      sortable.push({
+         item: enriched,
+         rank: camelotKey ? camelotRank(camelotKey) : 0,
+         // Key mode only: a track with a key but no BPM parks at the end of its key group.
+         bpm: bpm ?? Number.POSITIVE_INFINITY,
+      });
    }
 
-   withBpm.sort((a, b) => (direction === 'asc' ? a.bpm - b.bpm : b.bpm - a.bpm));
+   const sign = direction === 'asc' ? 1 : -1;
+   sortable.sort((a, b) => {
+      if (mode === 'key' && a.rank !== b.rank) return a.rank - b.rank;
+      // Equality check first: two BPM-less tracks in key mode would otherwise compute
+      // Infinity - Infinity = NaN, and a comparator returning NaN leaves order undefined.
+      if (a.bpm === b.bpm) return 0;
+      return sign * (a.bpm - b.bpm);
+   });
 
-   const ordered = [...withBpm.map((x) => x.item), ...skipped];
-   return { ordered, sortedCount: withBpm.length, skipped };
+   const ordered = [...sortable.map((entry) => entry.item), ...skipped];
+   return { ordered, sortedCount: sortable.length, skipped };
 }
 
 function sameOrder(items: PlaylistItem[], uids: string[]): boolean {

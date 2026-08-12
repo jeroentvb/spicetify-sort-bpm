@@ -58,9 +58,15 @@
    background: var(--background-elevated-base, #282828);
    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
    animation: sort-bpm-fade 0.12s ease;
+
+   // Leaf labels ("by key + BPM") are shorter than the destination rows above them.
+   &--submenu {
+      min-width: 190px;
+   }
 }
 
 .sort-bpm-menu-item {
+   position: relative; // Anchors the chevron.
    display: flex;
    flex-direction: column;
    gap: 2px;
@@ -73,8 +79,19 @@
    text-align: left;
    cursor: pointer;
 
-   &:hover {
+   // `--open` keeps a destination row highlighted while its submenu is showing.
+   &:hover,
+   &:focus-visible,
+   &--open {
       background: var(--background-elevated-highlight, rgba(255, 255, 255, 0.1));
+   }
+
+   &:focus-visible {
+      outline: none;
+   }
+
+   &--parent {
+      padding-right: 30px; // Room for the chevron.
    }
 
    .sort-bpm-menu-item-label {
@@ -84,6 +101,15 @@
 
    .sort-bpm-menu-item-sub {
       font-size: 0.75rem;
+      color: var(--text-subdued, #b3b3b3);
+   }
+
+   .sort-bpm-menu-item-chevron {
+      position: absolute;
+      top: 50%;
+      right: 10px;
+      display: flex;
+      transform: translateY(-50%);
       color: var(--text-subdued, #b3b3b3);
    }
 }
