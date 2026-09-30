@@ -1,6 +1,6 @@
 {
-    "name": "Sort BPM",
-    "description": "Sort a playlist by BPM, either in place or into a new playlist.",
+    "name": "Sort BPM and key",
+    "description": "Sort a playlist by BPM, either in place or into a new playlist. Optionally also sort by (camelot) key",
     "main": "sort-bpm.js",
     "readme": "README.md",
     "authors": [{ "name": "jeroentvb", "url": "https://github.com/jeroentvb" }],
