@@ -94,6 +94,19 @@
       padding-right: 30px; // Room for the chevron.
    }
 
+   &--disabled {
+      cursor: default;
+      opacity: 0.5;
+
+      &:hover {
+         background: transparent;
+      }
+
+      .sort-bpm-menu-item-chevron {
+         display: none;
+      }
+   }
+
    .sort-bpm-menu-item-label {
       font-size: 0.875rem;
       font-weight: 500;

@@ -4,6 +4,8 @@ import {
    sortToNewPlaylistByBpm,
    sortToNewPlaylistByKey,
 } from '../services/actions';
+import { getCurrentPlaylistUri } from '../services/current-uri';
+import { canModify } from '../services/playlist';
 
 export const BUTTON_ID = 'sort-bpm-bpm-button';
 const MENU_ID = 'sort-bpm-bpm-menu';
@@ -30,6 +32,8 @@ interface MenuEntry {
    label: string;
    sublabel: string;
    items: MenuLeaf[];
+   /** Only offered on playlists the user can edit; otherwise shown disabled with this sublabel. */
+   requiresEdit?: string;
 }
 
 /** The two sort modes, spelled the same way under every destination. */
@@ -45,6 +49,7 @@ const ACTIONS: MenuEntry[] = [
       label: 'Reorder this playlist',
       sublabel: 'In place · keeps date added',
       items: modeLeaves(sortReorderByBpm, sortReorderByKey),
+      requiresEdit: 'Only for playlists you own',
    },
    {
       label: 'Sort into new playlist',
@@ -214,6 +219,22 @@ function createItem(label: string, sublabel: string, isParent: boolean): HTMLBut
    return item;
 }
 
+function isDisabled(item: HTMLElement): boolean {
+   return item.getAttribute('aria-disabled') === 'true';
+}
+
+/**
+ * Grey out a row. It stays focusable (as ARIA recommends for disabled menu items), so
+ * keyboard users still reach it and hear why it's unavailable.
+ */
+function disableItem(item: HTMLElement, sublabel: string): void {
+   item.setAttribute('aria-disabled', 'true');
+   item.classList.add('sort-bpm-menu-item--disabled');
+   const sub = item.querySelector('.sort-bpm-menu-item-sub');
+   if (sub) sub.textContent = sublabel;
+   if (openParent === item) closeSubmenu();
+}
+
 function positionSubmenu(parent: HTMLElement, submenu: HTMLElement): void {
    const root = parent.closest('.sort-bpm-menu');
    const rootRect = (root ?? parent).getBoundingClientRect();
@@ -239,6 +260,7 @@ function positionSubmenu(parent: HTMLElement, submenu: HTMLElement): void {
 
 function openSubmenu(parent: HTMLElement, entry: MenuEntry, focusFirst: boolean): void {
    cancelClose();
+   if (isDisabled(parent)) return closeSubmenu();
 
    if (openParent === parent) {
       const existing = document.getElementById(SUBMENU_ID);
@@ -286,6 +308,9 @@ function openMenu(anchor: HTMLElement, fromKeyboard: boolean): void {
    menu.className = 'sort-bpm-menu';
    menu.setAttribute('role', 'menu');
 
+   const uri = getCurrentPlaylistUri();
+   const editable = uri ? canModify(uri) : Promise.resolve(true);
+
    for (const entry of ACTIONS) {
       const item = createItem(entry.label, entry.sublabel, true);
       item.addEventListener('mouseenter', () => openSubmenu(item, entry, false));
@@ -297,6 +322,15 @@ function openMenu(anchor: HTMLElement, fromKeyboard: boolean): void {
          openSubmenu(item, entry, true);
       });
       menu.appendChild(item);
+
+      // The permission lookup is async, so the row renders enabled and is greyed out once
+      // it resolves (near-instantly, the metadata is cached) — unless the menu is gone by then.
+      const { requiresEdit } = entry;
+      if (requiresEdit) {
+         void editable.then((ok) => {
+            if (!ok && item.isConnected) disableItem(item, requiresEdit);
+         });
+      }
    }
 
    document.body.appendChild(menu);
