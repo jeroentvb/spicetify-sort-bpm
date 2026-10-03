@@ -110,14 +110,21 @@ export function sortTracks(
    return { ordered, sortedCount: sortable.length, skipped };
 }
 
-function sameOrder(items: PlaylistItem[], uids: string[]): boolean {
-   return items.length === uids.length && items.every((item, i) => item.uid === uids[i]);
+function sameUids(a: string[], b: string[]): boolean {
+   return a.length === b.length && a.every((uid, i) => uid === b[i]);
 }
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 async function applyModify(uri: string, modification: object): Promise<void> {
    const api = Spicetify.Platform.PlaylistAPI;
    if (typeof api._playlistServiceClient?.modify === 'function') {
-      await api._playlistServiceClient.modify({ uri, request: modification });
+      const response = await api._playlistServiceClient.modify({ uri, request: modification });
+      // The service reports failures in the response rather than by rejecting.
+      const status = response?.status?.statusCode;
+      if (typeof status === 'number' && (status < 200 || status > 299)) {
+         throw new Error(`Playlist modify failed (${status}): ${response.status.reason ?? ''}`);
+      }
    } else if (typeof api.applyModification === 'function') {
       await api.applyModification(uri, modification, true);
    } else {
@@ -182,11 +189,58 @@ function planBatchedMoves(currentUids: string[], targetUids: string[]): BatchMov
    return moves;
 }
 
+/** Max plan-and-move passes before giving up on an in-place reorder. */
+const MAX_ROUNDS = 5;
+
+/** How long the playlist order must stay unchanged before we trust a read of it. */
+const SETTLE_MS = 700;
+
+/**
+ * Read the playlist's row uids once the order has stopped changing. Right after a
+ * burst of moves, the client can still be reconciling with the server, and a move
+ * that read back fine may be undone a moment later.
+ */
+async function readSettledUids(uri: string): Promise<string[]> {
+   let previous = (await getContents(uri)).map((item) => item.uid);
+   for (let i = 0; i < 10; i++) {
+      await delay(SETTLE_MS);
+      const current = (await getContents(uri)).map((item) => item.uid);
+      if (sameUids(previous, current)) return current;
+      previous = current;
+   }
+   return previous;
+}
+
+/**
+ * Move rows until the playlist matches `targetUids`. Back-to-back moves are
+ * occasionally dropped by the client's sync even though each `modify` reports
+ * success, so a single pass leaves a few tracks stranded. Each round therefore
+ * re-reads the settled order and plans moves from what's really there; the
+ * correction rounds after the first are short. Returns whether the order matches.
+ */
+async function convergeByMoves(
+   uri: string,
+   targetUids: string[],
+   onProgress?: (done: number, total: number) => void,
+): Promise<boolean> {
+   for (let round = 0; round < MAX_ROUNDS; round++) {
+      const currentUids = await readSettledUids(uri);
+      if (sameUids(currentUids, targetUids)) return true;
+
+      const moves = planBatchedMoves(currentUids, targetUids);
+      for (let i = 0; i < moves.length; i++) {
+         await applyModify(uri, { operation: 'move', rows: moves[i].rows, before: moves[i].before });
+         onProgress?.(i + 1, moves.length);
+      }
+   }
+   return sameUids(await readSettledUids(uri), targetUids);
+}
+
 /**
  * Reorder the playlist in place to match `ordered`, using batched `move` calls
  * (≤ MAX_BATCH rows each). Pure reorder — nothing is removed and "date added" is
- * preserved. Verifies the final order and only falls back to remove + re-add
- * (which resets "date added") if the moves didn't produce the exact order.
+ * preserved. Only falls back to remove + re-add (which resets "date added") if the
+ * moves can't produce the exact order.
  */
 export async function reorderInPlace(
    uri: string,
@@ -196,26 +250,25 @@ export async function reorderInPlace(
    const targetUids = ordered.map((item) => item.uid);
    if (targetUids.length === 0) return;
 
-   const api = Spicetify.Platform.PlaylistAPI;
-
    try {
-      const currentUids = (await getContents(uri)).map((item) => item.uid);
-      const moves = planBatchedMoves(currentUids, targetUids);
-
-      for (let i = 0; i < moves.length; i++) {
-         await applyModify(uri, { operation: 'move', rows: moves[i].rows, before: moves[i].before });
-         onProgress?.(i + 1, moves.length);
-      }
-      if (typeof api.resync === 'function') await api.resync(uri);
+      if (await convergeByMoves(uri, targetUids, onProgress)) return;
    } catch (err) {
-      console.warn('Sort BPM: batched move failed; verifying and maybe falling back', err);
+      console.warn('Sort BPM: batched move failed; falling back', err);
    }
-
-   const after = await getContents(uri);
-   if (sameOrder(after, targetUids)) return;
 
    console.info('Sort BPM: in-place moves did not fully apply; falling back to remove + re-add');
    await replaceInOrder(uri, ordered);
+
+   // Re-adding in batches can race the same way, so straighten out any strays. The
+   // re-added rows have new uids, so map the target order onto them by track uri.
+   const readded = await getContents(uri);
+   const uidsByUri = new Map<string, string[]>();
+   for (const item of readded) uidsByUri.set(item.uri, [...(uidsByUri.get(item.uri) ?? []), item.uid]);
+   const readdedTarget = ordered.map((item) => uidsByUri.get(item.uri)?.shift()).filter((uid) => uid !== undefined);
+
+   if (!(await convergeByMoves(uri, readdedTarget, onProgress))) {
+      throw new Error('Playlist order did not match after re-adding the tracks');
+   }
 }
 
 /** Reliable fallback: remove every track, then re-add in the desired order. Resets "date added". */
