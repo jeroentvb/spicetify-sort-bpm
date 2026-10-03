@@ -14,19 +14,52 @@ internal `Spicetify.*` / `Spicetify.Platform.*` globals.
 - Spicetify can enable Chromium **DevTools** in the client (`spicetify enable-devtools`), which is how
   the running HTML, the React tree, and the JS console are inspected.
 
-### You cannot run or inspect the client yourself
+### Inspecting the live client via the Chrome DevTools Protocol
 
-There is no way for you to open Spotify, click the button, or read the console from here. Building
-(`npm run build`/`watch`) only produces a bundle; it does **not** exercise the code. So:
+The user runs Spotify with `--remote-debugging-port=9222 --remote-allow-origins=*`, so you can inspect
+and drive the running client yourself over CDP on `localhost:9222`. Building (`npm run build`/`watch`)
+only produces a bundle and does **not** exercise the code, so use the client to confirm things.
 
-- **To learn anything about Spotify's internals** — the shape of a `Platform.*` API, whether a method
-  exists on this client version, what a DOM node / testid looks like, what props sit on a row's React
-  fiber — **ask the user to run a snippet in the DevTools console and paste the result.** Don't guess
-  at undocumented API shapes; confirm them this way.
-- **To verify a change actually works**, ask the user to build, reload Spotify (`Ctrl/Cmd+R` in the
-  client), and report what happened. There are no automated tests.
+- Check it's up: `curl -s http://127.0.0.1:9222/json/version`. If it isn't, ask the user to restart
+  Spotify with those flags (on macOS:
+  `/Applications/Spotify.app/Contents/MacOS/Spotify --remote-debugging-port=9222 --remote-allow-origins=*`).
+- `curl -s http://127.0.0.1:9222/json/list` lists targets. The app is the `page` target whose `url` is
+  `https://xpui.app.spotify.com/index.html`. Its `title` shows the current view.
+- Evaluate JS in that page with `Runtime.evaluate` over its `webSocketDebuggerUrl`. Node has a global
+  `WebSocket`, so a small script in the scratchpad works:
 
-Everything about Spotify's internals here was reverse-engineered this way and is version-fragile.
+  ```js
+  // node cdp.mjs <file-with-js-expression>
+  import { readFileSync } from 'node:fs';
+  const expression = readFileSync(process.argv[2], 'utf8');
+  const targets = await (await fetch('http://127.0.0.1:9222/json/list')).json();
+  const t = targets.find((t) => t.type === 'page' && /xpui/.test(t.url));
+  const ws = new WebSocket(t.webSocketDebuggerUrl);
+  await new Promise((r) => (ws.onopen = r));
+  ws.onmessage = (m) => {
+     const d = JSON.parse(m.data);
+     if (d.id === 1) { console.log(JSON.stringify(d.result?.result?.value ?? d.result, null, 2)); ws.close(); }
+  };
+  ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate',
+     params: { expression, returnByValue: true, awaitPromise: true } }));
+  ```
+
+  Return plain JSON-serializable values (e.g. `outerHTML.slice(...)`, key lists), not DOM nodes.
+- **To learn about Spotify's internals**, such as a `Platform.*` API shape, whether a global still
+  exists (`Object.keys(Spicetify)`), a DOM node or testid, or a row's fiber props
+  (`window.sortBpm.inspectRowItem()`), query the client this way instead of guessing.
+- **To verify a change**, run `npm run build` (it writes into the Spicetify Extensions folder), reload
+  the client by evaluating `location.reload()`, wait a few seconds, then query the DOM or
+  `window.sortBpm`. The button is injected asynchronously, so a check made right after load can miss it.
+- `window.sortBpm` is set only once `main()` has finished starting up. If it's missing but the
+  extension's `<style>` tag is present, `main()` is stuck in its startup wait loop.
+- Reading state and reloading are fine. Ask before doing anything that changes the user's data, such as
+  running a sort/reorder or creating playlists through the UI or `PlaylistAPI`.
+- The client UI is in **Dutch**, so `aria-label` selectors with English text don't match. Prefer testids
+  and class names.
+
+There are no automated tests. Everything about Spotify's internals here was reverse-engineered and is
+version-fragile.
 
 ## Commands
 
@@ -49,7 +82,7 @@ and the batched in-place reorder that preserves "date added"). **`TECHNICAL.md` 
 it locally; it's the most useful doc in the repo.
 
 When a Spotify update breaks the extension, the version-dependent assumptions are isolated to three
-files — start there, and confirm the new reality with a DevTools snippet run by the user:
+files — start there, and confirm the new reality by querying the live client over CDP:
 
 - `src/constants/selectors.ts` — DOM selectors / testids (action bar, sort button), as ordered
   candidate lists.

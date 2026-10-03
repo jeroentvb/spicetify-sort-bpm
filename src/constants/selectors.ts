@@ -15,6 +15,7 @@ export const ACTION_BAR = [
 /** The "Search in playlist" toggle button. */
 export const SEARCH_BUTTON = [
    'button[data-testid="search-fields-button"]',
+   'button.x-filterBox-expandButton',
    'button[aria-label="Search in playlist"]',
    'button[aria-label*="Search in"]',
 ];
@@ -22,6 +23,8 @@ export const SEARCH_BUTTON = [
 /** The sort / view-options button (opens the sort + list/compact menu). */
 export const SORT_BUTTON = [
    'button[data-testid="sort-button"]',
+   // Locale-independent; current clients have no testid/aria-label on it
+   'button.x-sortBox-sortDropdown',
    'button[aria-label="Sort"]',
    'button[aria-label*="Sort"]',
    // Newer clients label it with the current order, e.g. "Custom order"

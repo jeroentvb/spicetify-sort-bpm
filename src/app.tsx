@@ -6,7 +6,7 @@ import { getCurrentPlaylistUri } from './services/current-uri';
 import './assets/css/styles.scss';
 
 async function main() {
-   while (!Spicetify?.Platform || !Spicetify?.CosmosAsync || !Spicetify?.URI) {
+   while (!Spicetify?.Platform?.History) {
       await new Promise((resolve) => setTimeout(resolve, 100));
    }
 

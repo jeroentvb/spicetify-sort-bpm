@@ -53,8 +53,37 @@ const SPECS: Record<SortMode, SortModeSpec> = {
    },
 };
 
+/**
+ * Show a toast. Newer Spicetify builds no longer define `Spicetify.showNotification`, and
+ * `Spicetify.Snackbar` only exposes `enqueueCustomSnackbar(children, options)` (a headless
+ * notistack variant, so we style the element ourselves). Falls back to the console.
+ */
 function notify(spec: SortModeSpec, message: string, isError = false): void {
-   Spicetify.showNotification(`${spec.prefix}: ${message}`, isError);
+   const text = `${spec.prefix}: ${message}`;
+   const legacy = (Spicetify as { showNotification?: unknown }).showNotification;
+   if (typeof legacy === 'function') {
+      legacy(text, isError);
+      return;
+   }
+
+   const snackbar = (Spicetify as { Snackbar?: { enqueueCustomSnackbar?: unknown } }).Snackbar;
+   if (typeof snackbar?.enqueueCustomSnackbar === 'function' && Spicetify.React) {
+      const element = Spicetify.React.createElement('div', {
+         style: {
+            background: isError ? '#e22134' : '#2e77d0',
+            color: '#fff',
+            padding: '12px 16px',
+            borderRadius: '8px',
+            fontSize: '14px',
+            fontWeight: 600,
+            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.5)',
+         },
+      }, text);
+      snackbar.enqueueCustomSnackbar(element, { keyPrefix: 'sort-bpm', autoHideDuration: isError ? 6000 : 4000 });
+      return;
+   }
+
+   (isError ? console.error : console.log)(text);
 }
 
 /** Log the resulting order for the devtools correctness check (see TECHNICAL.md). */

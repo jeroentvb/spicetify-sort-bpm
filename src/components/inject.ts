@@ -5,7 +5,7 @@ import { BUTTON_ID, createBpmButton } from './bpm-button';
 
 /**
  * Ensure the BPM button is present on playlist pages and absent elsewhere.
- * The button is placed just before the Sort button in the action bar; if the
+ * The button is placed just after (to the right of) the Sort button; if the
  * Sort button can't be located we fall back to appending to the action bar.
  */
 function ensureButton(): void {
@@ -24,8 +24,14 @@ function ensureButton(): void {
    const button = createBpmButton();
    const sortButton = queryFirst(actionBar, SORT_BUTTON);
 
-   if (sortButton?.parentElement) {
-      sortButton.parentElement.insertBefore(button, sortButton);
+   if (sortButton) {
+      // The sort button may sit in a non-flex wrapper (a plain block <div>); inserting inside it would
+      // stack us below it, so go after that wrapper in the flex row instead.
+      const parent = sortButton.parentElement;
+      const anchor = parent && parent !== actionBar && !getComputedStyle(parent).display.includes('flex')
+         ? parent
+         : sortButton;
+      anchor.after(button);
    } else {
       actionBar.appendChild(button);
    }
